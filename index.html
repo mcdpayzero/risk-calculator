@@ -35,6 +35,10 @@
         .shadow-custom {
             box-shadow: 0 20px 25px -5px rgba(239, 68, 68, 0.1), 0 8px 10px -6px rgba(239, 68, 68, 0.1);
         }
+        /* Style for the new error message box */
+        #errorMessage {
+            transition: opacity 0.3s ease-in-out;
+        }
     </style>
 </head>
 <body class="min-h-screen flex items-center justify-center p-4">
@@ -55,6 +59,11 @@
         </div>
         <!-- Calculator Form -->
         <form id="riskForm" class="space-y-6">
+            <!-- NEW: Inline Error Message Box -->
+            <div id="errorMessage" class="hidden p-3 bg-red-100 border border-red-400 text-red-700 rounded-lg font-medium transition-opacity" role="alert">
+                <!-- Error message will be inserted here -->
+            </div>
+            
             <!-- Step 1: Vertical Risk -->
             <div data-step="1" class="step">
                 <h3 class="text-2xl font-bold text-gray-800 mb-6">Question 1/6: Primary Vertical Risk</h3>
@@ -173,7 +182,7 @@
             </div>
             <div class="text-left space-y-6">
                 <h4 class="text-2xl font-bold text-gray-800 border-b pb-2">Your Custom Mitigation Plan</h4>
-                <div id="mitigationPlan"></div>
+                <div id="mitigationPlan" class="space-y-4"></div>
                 <div class="pt-4 border-t mt-6">
                     <h4 class="text-xl font-bold text-gray-800 mb-2">Estimated Interchange-Plus Rate:</h4>
                     <p id="rateEstimate" class="text-2xl font-semibold text-green-600">--</p>
@@ -184,12 +193,16 @@
     </div>
 
     <script>
+        'use strict';
+
         // === CONFIGURATION ===
-        // REPLACE THIS WITH YOUR GOOGLE APPS SCRIPT WEB APP URL
+        // Note: The original Google Apps Script URL is kept here.
         const CRM_API_URL = 'https://script.google.com/macros/s/AKfycbwoMXvGedIMV3XxHCfsRo1uBVCV7AS84J7rD74Yo7re6kjBboFoKIWVtP2YinzfQofy/exec';
 
         let currentStep = 1;
         const totalSteps = 6;
+        
+        // Caching DOM elements
         const form = document.getElementById('riskForm');
         const steps = form.querySelectorAll('.step');
         const nextBtn = document.getElementById('nextBtn');
@@ -198,8 +211,25 @@
         const loadingMessage = document.getElementById('loadingMessage');
         const resultsScreen = document.getElementById('resultsScreen');
         const appContainer = document.getElementById('app-container');
+        const errorMessage = document.getElementById('errorMessage');
 
+        // === UTILITY FUNCTIONS ===
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+            // Ensure opacity transition happens after display change
+            setTimeout(() => errorMessage.style.opacity = '1', 10);
+        }
+
+        function hideError() {
+            errorMessage.style.opacity = '0';
+            // Wait for transition to complete before hiding fully
+            setTimeout(() => errorMessage.classList.add('hidden'), 300);
+        }
+        
         // === CORE FUNCTIONS ===
+
         function updateProgressBar() {
             const progressBar = document.getElementById('progress-bar');
             progressBar.innerHTML = '';
@@ -213,9 +243,14 @@
         }
 
         function showStep(stepIndex) {
+            // Hide all steps first
             steps.forEach(step => step.classList.add('hidden'));
+            
+            // Show the current step
             const current = form.querySelector(`[data-step="${stepIndex}"]`);
             if (current) current.classList.remove('hidden');
+            
+            // Update navigation buttons
             backBtn.disabled = stepIndex === 1;
             if (stepIndex === totalSteps) {
                 nextBtn.classList.add('hidden');
@@ -224,25 +259,43 @@
                 nextBtn.classList.remove('hidden');
                 submitBtn.classList.add('hidden');
             }
+            
+            hideError(); // Clear any previous error on step change
             updateProgressBar();
         }
 
         function validateCurrentStep() {
             const currentStepElement = form.querySelector(`[data-step="${currentStep}"]`);
-            const requiredInputs = currentStepElement.querySelectorAll('input[required], input[type="radio"]');
+            // Check for both required text inputs and radio buttons
+            const requiredInputs = currentStepElement.querySelectorAll('[required]');
+            
             let isValid = true;
-            requiredInputs.forEach(input => {
-                if (input.type === 'radio') {
-                    const groupName = input.name;
+            
+            // 1. Check specific required inputs (like AOV and Email in step 6)
+            for (const input of requiredInputs) {
+                if (!input.value) {
+                    isValid = false;
+                    break;
+                }
+            }
+
+            // 2. Check radio groups (only needed for the radio steps 1-5)
+            if (isValid && currentStep < totalSteps) {
+                const radioGroups = new Set();
+                currentStepElement.querySelectorAll('input[type="radio"]').forEach(radio => radioGroups.add(radio.name));
+                
+                for (const groupName of radioGroups) {
                     if (!form.querySelector(`input[name="${groupName}"]:checked`)) {
                         isValid = false;
+                        break;
                     }
-                } else if (input.hasAttribute('required') && !input.value) {
-                    isValid = false;
                 }
-            });
+            }
+
             if (!isValid) {
-                alert('Please select an option or fill in the required field to continue.');
+                showError('Please select an option or fill in the required field to continue.');
+            } else {
+                hideError();
             }
             return isValid;
         }
@@ -261,7 +314,7 @@
             }
         }
 
-        // === PCS CALCULATION ===
+        // === PCS CALCULATION LOGIC (Unchanged) ===
         function calculatePCS(formData) {
             let pcs = 100;
             let riskSummary = "Stable and Optimized (Tier 3)";
@@ -300,6 +353,7 @@
             else if (cb === '1.0%-1.5%') pcs -= 15;
             else if (cb === '0.5%-0.9%') pcs -= 5;
 
+            // Clamp PCS between 1 and 100
             pcs = Math.max(1, Math.min(100, pcs));
 
             if (pcs < 50) {
@@ -338,16 +392,17 @@
             console.log('Sending to Google Sheets:', submissionData);
 
             try {
-                // GitHub Pages requires no-cors
+                // Using 'no-cors' mode is required for cross-domain Google Apps Script submission without CORS setup
                 await fetch(CRM_API_URL, {
                     method: 'POST',
-                    mode: 'no-cors',
+                    mode: 'no-cors', 
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(submissionData)
                 });
                 console.log('Data sent successfully (check Google Sheet)!');
             } catch (err) {
-                console.log('Sent anyway — no-cors mode blocks response reading');
+                // Catching error is mostly for development logging; the no-cors mode prevents useful error info.
+                console.log('Fetch operation completed (or failed without visible status due to no-cors mode). Proceeding to display results.', err);
             } finally {
                 loadingMessage.classList.add('hidden');
                 displayResults(results);
@@ -355,17 +410,32 @@
         }
 
         function displayResults(results) {
-            appContainer.classList.add('shadow-custom');
-            let bgColor = 'bg-green-500', textColor = 'text-green-700';
-            if (results.pcs < 50) { bgColor = 'bg-red-500'; textColor = 'text-red-700'; }
-            else if (results.pcs < 75) { bgColor = 'bg-yellow-500'; textColor = 'text-yellow-700'; }
+            // Determine colors based on score
+            let bgColor = 'bg-red-500', textColor = 'text-red-700', rateColor = 'text-red-500';
 
+            if (results.pcs >= 75) { 
+                bgColor = 'bg-green-500'; 
+                textColor = 'text-green-700'; 
+                rateColor = 'text-green-600';
+            } else if (results.pcs >= 50) { 
+                bgColor = 'bg-yellow-500'; 
+                textColor = 'text-yellow-700'; 
+                rateColor = 'text-yellow-600';
+            }
+
+            // Update DOM with results
+            appContainer.classList.add('shadow-custom');
+            
             document.getElementById('pcsDisplay').textContent = results.pcs;
             document.getElementById('pcsDisplay').className = `text-6xl font-black mt-2 inline-block px-6 py-3 rounded-xl shadow-custom text-white ${bgColor}`;
+            
             document.getElementById('riskSummary').textContent = results.riskSummary;
             document.getElementById('riskSummary').className = `mt-4 font-semibold ${textColor}`;
+            
             document.getElementById('rateEstimate').textContent = results.rateEstimate;
+            document.getElementById('rateEstimate').className = `text-2xl font-semibold ${rateColor}`;
 
+            // Populate mitigation plan
             const planList = document.getElementById('mitigationPlan');
             planList.innerHTML = '';
             results.mitigationPlan.forEach((point, i) => {
@@ -382,6 +452,8 @@
         nextBtn.addEventListener('click', nextStep);
         backBtn.addEventListener('click', prevStep);
         form.addEventListener('submit', handleSubmit);
+        
+        // Handle 'Enter' key press for navigation
         form.addEventListener('keypress', e => {
             if (e.key === 'Enter') {
                 e.preventDefault();
@@ -389,6 +461,7 @@
             }
         });
 
+        // Initialize application on load
         window.onload = () => showStep(currentStep);
     </script>
 </body>
